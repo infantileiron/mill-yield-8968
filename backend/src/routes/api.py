@@ -1,11 +1,11 @@
-from fastapi import APIRouter,Depends
+from fastapi import APIRouter,Depends,HTTPException
 from sqlalchemy import select,func,text
 from src.config.database import get_db
 from src.controllers.auth import current,writable,admin,login
 from src.controllers.export import export_review
-from src.schemas.business import Login,BatchInput,InspectionInput,ReviewInput,ApprovalInput
-from src.models.entities import Batch,Inspection,Review,Audit
-from src.services import business
+from src.schemas.business import Login,BatchInput,InspectionInput,ReviewInput,ApprovalInput,RepairInput
+from src.models.entities import Batch,Inspection,Review,Audit,SyncRun,ReconcileReport
+from src.services import business,sync
 from src.utils.serialize import record
 router=APIRouter()
 @router.post('/auth/login')
@@ -35,3 +35,22 @@ def export(id:int,db=Depends(get_db),u=Depends(current)):return export_review(bu
 def audits(db=Depends(get_db),u=Depends(admin)):return [record(x) for x in db.scalars(select(Audit).order_by(Audit.id.desc()).limit(100))]
 @router.get('/counts')
 def counts(db=Depends(get_db),u=Depends(current)):return {m.__tablename__:db.scalar(select(func.count()).select_from(m)) for m in (Batch,Inspection,Review)}
+@router.get('/sync/status')
+def sync_status(db=Depends(get_db),u=Depends(current)):return sync.status(db)
+@router.get('/sync/runs')
+def sync_runs(db=Depends(get_db),u=Depends(current)):
+    return [record(x) for x in db.scalars(select(SyncRun).order_by(SyncRun.id.desc()).limit(20))]
+@router.post('/sync/run',status_code=202)
+def sync_run(db=Depends(get_db),u=Depends(writable)):return record(sync.enqueue_run(db,u))
+@router.post('/sync/reconcile',status_code=201)
+def sync_reconcile(db=Depends(get_db),u=Depends(writable)):return record(sync.reconcile(db,u))
+@router.get('/sync/reconciles')
+def sync_reconciles(db=Depends(get_db),u=Depends(current)):
+    return [{k:v for k,v in record(x).items() if k!='details'} for x in db.scalars(select(ReconcileReport).order_by(ReconcileReport.id.desc()).limit(20))]
+@router.get('/sync/reconciles/{id}')
+def sync_reconcile_detail(id:int,db=Depends(get_db),u=Depends(current)):
+    r=db.get(ReconcileReport,id)
+    if not r:raise HTTPException(404,'对账报告不存在')
+    return record(r)
+@router.post('/sync/repair',status_code=201)
+def sync_repair(data:RepairInput,db=Depends(get_db),u=Depends(writable)):return record(sync.repair(db,data,u))

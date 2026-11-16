@@ -3,6 +3,7 @@ x-app: &app
   build: ./backend
   environment: &env
     DATABASE_URL: postgresql+psycopg://mill:${DB_PASSWORD:-mill_local_demo}@db:5432/mill
+    CENTER_DATABASE_URL: postgresql+psycopg://mill:${CENTER_DB_PASSWORD:-center_local_demo}@center-db:5432/center
     REDIS_URL: redis://redis:6379/0
     JWT_SECRET: ${JWT_SECRET:-mill-local-development-secret-change-32-chars}
     SEED_DEMO: ${SEED_DEMO:-true}
@@ -22,6 +23,20 @@ services:
     volumes: [dbdata:/var/lib/postgresql/data]
     healthcheck:
       test: [CMD-SHELL, "pg_isready -U mill -d mill"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  center-db:
+    image: postgres:16-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-mill-yield}-center-db
+    environment:
+      POSTGRES_USER: mill
+      POSTGRES_PASSWORD: ${CENTER_DB_PASSWORD:-center_local_demo}
+      POSTGRES_DB: center
+    ports: ["${CENTER_DB_PORT:-17800}:5432"]
+    volumes: [centerdbdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U mill -d center"]
       interval: 3s
       timeout: 3s
       retries: 20
@@ -70,6 +85,7 @@ services:
       retries: 20
 volumes:
   dbdata:
+  centerdbdata:
   redisdata:
   artifacts:
 networks:

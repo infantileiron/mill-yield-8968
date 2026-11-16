@@ -1,0 +1,10 @@
+-- 中心库（厂部质量中心独立副本）schema 约定，实际表结构由 SQLAlchemy create_all 应用。
+-- 源库 mill 新增：
+--   sync_runs：同步任务（queued/running/completed/failed，阶段 full/incremental，复制与扫描计数、断点快照、错误信息）。
+--   reconcile_reports：对账/修复报告（kind=reconcile|repair，status=clean|diffs，summary 汇总、details 逐批差异 JSON）。
+--   reviews 增加列：source（ledger|center）、source_meta（中心库诊断的同步依据：断点、对账报告号、时间）。
+-- 中心库 center（独立实例，可单独停启）：
+--   center_batches：批次副本，source_id/code 唯一，status=synced|reconciled|diverged|repairing。
+--   center_inspections：检验副本，source_id/sample_code 唯一，batch_source_id 关联批次源 id。
+--   sync_state：单行断点（batch_checkpoint / inspection_checkpoint），与每个同步分块同事务提交。
+-- 同步为追加式：只补缺、不改写中心已有内容；多出与内容差异由对账列出、修复对齐，修复不触碰源台账。

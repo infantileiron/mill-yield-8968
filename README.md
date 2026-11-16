@@ -1,10 +1,12 @@
 # 青禾 · 磨坊出粉率分布复核
 
-为青禾制粉厂的 3 条生产线提供原粮批次、检验记录、分布诊断和复核签核，质量分析员每天把原粮检验变成可追溯的交班结论。
+为青禾制粉厂的 3 条生产线提供原粮批次、检验记录、分布诊断和复核签核，质量分析员每天把原粮检验变成可追溯的交班结论。厂部质量中心通过中心库独立保存检验副本，不再依赖手工拷贝。
 
 ## 真实业务场景
 
 青禾质量组原来把供应商批次写进 `原粮到货-1115.xlsx`，检验员录入不同工作簿，分析员手算四分位数，负责人在群里确认。问题是样本与批次容易错位、计算口径随人员变化、签核意见无法回到当时的数据。本项目承接原粮入厂检验，输出带冻结样本和 SHA-256 的复核 CSV，供产线负责人安排复测。
+
+厂部质量中心需要独立保存检验副本。过去手工拷贝 Excel，常漏掉拷贝期间新录入的样本。中心库是独立运行的 PostgreSQL 实例：同步任务先全量接入批次和检验，再按断点增量追平；对账逐批列出缺失、多出与内容差异，修复只改中心库、不改源台账；诊断可直接选用中心库中已对账的完整批次。
 
 - 批次台账：供应商、产线、吨数、日期、样本数，唯一业务编号。
 - 检验录入：出粉率、水分、检验员，范围校验和重复编号阻断。
@@ -30,7 +32,7 @@ docker compose up -d --build --wait
 docker compose exec -T backend python -m scripts.seed_demo
 ```
 
-访问 [前端](http://localhost:18200)、[后端 API 文档](http://localhost:19200/docs)。PostgreSQL 映射端口 17700；Redis 不暴露宿主端口。网络固定为 `10.253.101.0/24`，可通过 `NETWORK_SUBNET` 修改以避开本机大量 Compose 栈的默认网段池限制。
+访问 [前端](http://localhost:18200)、[后端 API 文档](http://localhost:19200/docs)。PostgreSQL 台账库映射端口 17700，中心库映射端口 17800；Redis 不暴露宿主端口。网络固定为 `10.253.101.0/24`，可通过 `NETWORK_SUBNET` 修改以避开本机大量 Compose 栈的默认网段池限制。
 
 ```sh
 docker compose down -v --remove-orphans
@@ -44,11 +46,11 @@ docker compose down -v --remove-orphans
 |---|---|
 | 前端 | 原生 ES modules / HTML / CSS，Nginx 1.27 |
 | API | Python 3.11、FastAPI 0.115.6、SQLAlchemy 2.0.36 |
-| 数据库 | PostgreSQL 16 |
+| 数据库 | PostgreSQL 16（台账库 `mill` + 独立中心库 `center`） |
 | 队列 | Redis 7、独立 Python worker 与心跳健康检查 |
 | 认证 | PyJWT 2.10.1、PBKDF2-SHA256 密码哈希 |
 
-`.env.example` 包含项目名、三个端口、数据库密码、JWT 密钥、演示 seed 开关、网络网段。演示密码和 JWT 密钥仅用于本地可复现运行，部署时自行替换。命名卷分别保存数据库、Redis AOF 和 worker 结果文件。恰好五个服务均配置健康检查，worker 等待 API seed 完成。
+`.env.example` 包含项目名、四个端口、两个数据库密码、JWT 密钥、演示 seed 开关、网络网段。演示密码和 JWT 密钥仅用于本地可复现运行，部署时自行替换。命名卷分别保存台账库、中心库、Redis AOF 和 worker 结果文件。恰好六个服务均配置健康检查，worker 等待 API seed 完成。backend 与 worker 不硬依赖 center-db：中心库停掉时台账照常录入，恢复后重新同步即可补齐。
 
 ## 数据与计算口径
 
@@ -65,6 +67,18 @@ docker compose down -v --remove-orphans
 
 后台 worker 从 Redis 消费复核 id，更新 queued→running→completed/failed，写结果至共享 artifacts 卷。重启时会扫描未完成任务并重新排队。负责人仅能签核 completed 状态，签核后不可重复签核。CSV 导出包含状态、口径值、签核意见和所有冻结样本。
 
+## 中心库同步
+
+中心库（`center-db` 服务，独立 PostgreSQL 实例与命名卷）保存批次与检验的只读副本，供厂部质量中心独立留存。同步由「中心库同步」页面驱动，写操作需分析员及以上角色，观察员只读。
+
+- **全量接入 → 增量追平**：首次同步把台账全部批次与检验复制到中心库；之后每次同步从断点（批次/检验高水位）继续，只补新增。断点保存在中心库 `sync_state`，与每个同步分块在同一事务提交。
+- **不漏不重**：同步是追加式的，已存在的源 id 跳过，中心表以 `source_id` 和业务编号双唯一约束兜底；每轮追平后对最近 500 个 id 重叠回扫，捕捉同步期间晚提交的行。并发录入与同步同时进行时，已提交样本不会丢失或重复。
+- **断点续跑**：任务中断（进程退出、中心库重启）后重新发起，从已提交断点继续，不重复入库。中心库不可用（如 `docker compose stop center-db`）时任务失败留痕，台账录入与诊断不受影响；中心恢复后重新发起即可补齐。
+- **对账与修复**：对账逐批比对台账与中心库，列出中心缺失、中心多出、内容差异（批次字段与样本字段，含归属批次错位）。修复只写中心库：补缺、删多出、按台账对齐内容，源台账不被改动。修复中的批次标记「修复中」，每批一个事务，中断时保持该状态，不会被诊断读到半批。
+- **中心库诊断**：分布诊断的数据来源可选「中心库」，只纳入状态为「已对账」的完整批次（批次字段与全部样本均与台账一致）。复核单冻结样本快照并记录同步依据（追平断点、对账报告号、时间），后续同步与修复不会改写既有报告；CSV 导出同步标明数据来源与依据。
+
+演示中心库不可用：`docker compose stop center-db` 后发起同步，任务失败并提示；`docker compose start center-db` 后重新发起同步即自动补齐。演示对账差异：直接改中心库（`docker compose exec center-db psql -U mill center`）删一行或改一个值，再发起对账即可看到逐批差异，修复后恢复一致。
+
 ## 一天的工作剧本
 
 1. 08:50 观察员登录查看 `QH-1115-A`，核对 15 个已有样本。
@@ -75,17 +89,22 @@ docker compose down -v --remove-orphans
 6. 09:40 独立 worker 完成计算，分析员核对 IQR 边界和异常样本。
 7. 10:00 负责人切换 admin，记录复测安排并签核。
 8. 10:20 观察员下载 `mill-yield-review-<id>.csv`，交给产线班长。
+9. 10:40 分析员在中心库同步页启动同步：首次全量接入 40 批 / 600 样本，之后增量追平。
+10. 10:50 开始对账，逐批核对缺失、多出与内容差异；如有差异逐批或全部修复。
+11. 11:00 在分布诊断中选择数据来源「中心库」，用已对账批次建立复核，报告标明同步依据。
 
 ## 目录与本地开发
 
-`backend/src` 按 routes/controllers/services/models/schemas/middlewares/utils/constants/config 分职责；`backend/scripts` 是幂等 seed；`backend/migrations` 记录初始 schema 约定，实际表结构由 SQLAlchemy `create_all` 应用。`frontend/src` 按 api/stores/types/components/common/hooks/pages/router/utils/constants 分模块。
+`backend/src` 按 routes/controllers/services/models/schemas/middlewares/utils/constants/config 分职责；中心库模型在 `models/center.py`（独立 metadata），同步引擎在 `services/sync.py`。`backend/scripts` 是幂等 seed；`backend/migrations` 记录 schema 约定，实际表结构由 SQLAlchemy `create_all` 应用，`reviews` 新增列由 `utils/migrate.py` 幂等补齐。`frontend/src` 按 api/stores/types/components/common/hooks/pages/router/utils/constants 分模块。
 
-本地 Python 开发：安装 `backend/requirements.txt`，配置 `DATABASE_URL` / `REDIS_URL` / `JWT_SECRET`，在 backend 目录执行 `uvicorn src.main:app --reload` 与 `python -m src.worker`。静态前端通过 Nginx `/api/` 代理后端无前缀路由，不需要 Node 构建。
+本地 Python 开发：安装 `backend/requirements.txt`，配置 `DATABASE_URL` / `CENTER_DATABASE_URL` / `REDIS_URL` / `JWT_SECRET`，在 backend 目录执行 `uvicorn src.main:app --reload` 与 `python -m src.worker`。静态前端通过 Nginx `/api/` 代理后端无前缀路由，不需要 Node 构建。
 
 共享枚举：`backend/src/constants/enums.py` 与 `frontend/src/constants/enums.js` 中分别定义角色 Role、复核状态 ReviewStatus、产线 LINES；UI 角色标签、后端鉴权及状态迁移遵守这些值。
 
 ## 范围与已知差异
 
 小型项目仅支持逐条录入，不提供 Excel 导入和外部检验仪器同步。原始检验记录采用追加留痕模式，没有删除/覆盖接口；错误记录须重新录入并在复核意见说明。签核是本地数据库留痕，不是电子签章。图形自动覆盖全部实际样本区间，完整 0–100 桶和所有样本在 API / CSV 中保留。演示时区在报告中显式标记 UTC。前端 Google Fonts 离线时回退宋体。
+
+中心库同步是单 worker 顺序执行，不提供多并发同步；重叠回扫窗口固定为最近 500 个源 id，更早的晚提交行由对账兜底列出并可修复。中心库为单向副本：不提供中心写回台账的通道，多出/差异修复只调整中心库。对账与修复在同步任务进行中返回 409，需等待同步完成。
 
 测试脚本、1440×900 页面截图与实测证据在源码外的 `test-artifacts/gb-3101/`。License：MIT。

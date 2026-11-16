@@ -33,8 +33,35 @@ class Review(Base):
     result:Mapped[dict]=mapped_column(JSON,default=dict)
     snapshot:Mapped[list]=mapped_column(JSON,default=list)
     note:Mapped[str]=mapped_column(Text,default="")
+    source:Mapped[str]=mapped_column(String(10),default="ledger")
+    source_meta:Mapped[dict]=mapped_column(JSON,default=dict)
     created_by:Mapped[str]=mapped_column(String(100))
     approved_by:Mapped[str]=mapped_column(String(100),default="")
+    created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=lambda:datetime.now(timezone.utc))
+class SyncRun(Base):
+    __tablename__="sync_runs"
+    id:Mapped[int]=mapped_column(primary_key=True)
+    status:Mapped[str]=mapped_column(String(20),default="queued")
+    phase:Mapped[str]=mapped_column(String(20),default="")
+    batches_copied:Mapped[int]=mapped_column(Integer,default=0)
+    inspections_copied:Mapped[int]=mapped_column(Integer,default=0)
+    batches_scanned:Mapped[int]=mapped_column(Integer,default=0)
+    inspections_scanned:Mapped[int]=mapped_column(Integer,default=0)
+    checkpoint_batch:Mapped[int]=mapped_column(Integer,default=0)
+    checkpoint_inspection:Mapped[int]=mapped_column(Integer,default=0)
+    error:Mapped[str]=mapped_column(Text,default="")
+    created_by:Mapped[str]=mapped_column(String(100))
+    created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=lambda:datetime.now(timezone.utc))
+    started_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=True)
+    finished_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=True)
+class ReconcileReport(Base):
+    __tablename__="reconcile_reports"
+    id:Mapped[int]=mapped_column(primary_key=True)
+    kind:Mapped[str]=mapped_column(String(20),default="reconcile")
+    status:Mapped[str]=mapped_column(String(20),default="clean")
+    summary:Mapped[dict]=mapped_column(JSON,default=dict)
+    details:Mapped[list]=mapped_column(JSON,default=list)
+    created_by:Mapped[str]=mapped_column(String(100))
     created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=lambda:datetime.now(timezone.utc))
 class Audit(Base):
     __tablename__="audits"

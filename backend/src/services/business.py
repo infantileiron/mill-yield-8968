@@ -4,6 +4,7 @@ from fastapi import HTTPException
 from redis import Redis
 from src.config.settings import REDIS_URL
 from src.models.entities import Batch,Inspection,Review
+from src.services import sync
 from src.utils.serialize import record
 queue=Redis.from_url(REDIS_URL,decode_responses=True)
 def batches(db):
@@ -23,10 +24,16 @@ def add_inspection(db,data):
     if not db.get(Batch,data['batch_id']):raise HTTPException(404,'原粮批次不存在')
     return create(db,Inspection,data)
 def submit(db,data,user):
-    rows=inspections(db)
-    if data['line']!='全部':rows=[x for x in rows if x['line']==data['line']]
-    if len(rows)<5:raise HTTPException(422,'该范围至少需要 5 条检验记录，请先录入')
-    obj=Review(**data,created_by=user.email,snapshot=rows);db.add(obj);db.commit()
+    if data.get('source')=='center':
+        rows,meta=sync.center_diagnosis_rows(db,data['line'])
+        if len(rows)<5:raise HTTPException(422,'中心库已对账的完整批次样本不足 5 条，请先完成同步与对账')
+        obj=Review(title=data['title'],line=data['line'],source='center',source_meta=meta,created_by=user.email,snapshot=rows)
+    else:
+        rows=inspections(db)
+        if data['line']!='全部':rows=[x for x in rows if x['line']==data['line']]
+        if len(rows)<5:raise HTTPException(422,'该范围至少需要 5 条检验记录，请先录入')
+        obj=Review(title=data['title'],line=data['line'],created_by=user.email,snapshot=rows)
+    db.add(obj);db.commit()
     try:queue.rpush('mill:jobs',obj.id)
     except Exception:
         obj.status='failed';obj.note='队列不可用，请恢复后重新提交';db.commit();raise HTTPException(503,obj.note)

@@ -1,4 +1,4 @@
-from pydantic import BaseModel,Field,field_validator
+from pydantic import BaseModel,Field,field_validator,model_validator
 from typing import Literal
 class Login(BaseModel):
     email:str
@@ -24,5 +24,19 @@ class InspectionInput(BaseModel):
 class ReviewInput(BaseModel):
     title:str=Field(min_length=2,max_length=120)
     line:Literal["全部","一线","二线","三线"]="全部"
+    source:Literal["ledger","center"]="ledger"
 class ApprovalInput(BaseModel):
     note:str=Field(min_length=5,max_length=1500)
+class RepairInput(BaseModel):
+    all:bool=False
+    codes:list[str]=Field(default_factory=list,max_length=200)
+    @field_validator('codes')
+    @classmethod
+    def valid_codes(cls,v):
+        for c in v:
+            if not (1<=len(c)<=50):raise ValueError('批次编号长度需在 1-50 之间')
+        return v
+    @model_validator(mode='after')
+    def target(self):
+        if not self.all and not self.codes:raise ValueError('请选择要修复的批次，或使用全部修复')
+        return self

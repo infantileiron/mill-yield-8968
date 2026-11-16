@@ -9,9 +9,12 @@ from src.routes.api import router
 from src.middlewares.audit import AuditMiddleware
 from src.middlewares.rate_limit import RateLimitMiddleware
 from src.services.business import queue
+from src.utils.migrate import ensure_review_columns
 @asynccontextmanager
 async def lifespan(app):
     Base.metadata.create_all(engine)
+    try:ensure_review_columns(engine)
+    except Exception:logging.exception('ensure review columns failed')
     if os.getenv('SEED_DEMO','true').lower()=='true':
         try:
             from scripts.seed_demo import seed
